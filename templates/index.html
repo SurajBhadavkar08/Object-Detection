@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YOLOv4 Object Detection</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <div class="container">
+    <h1>YOLOv4 Object Detection</h1>
+    <p class="subtitle">Upload an image, set thresholds, and detect objects.</p>
+
+    {% with messages = get_flashed_messages() %}
+    {% if messages %}
+    <div class="flash">
+      {% for message in messages %}
+      <div class="flash-item">{{ message }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    <form class="card" action="{{ url_for('detect') }}" method="post" enctype="multipart/form-data">
+      <div class="field">
+        <label>Choose image</label>
+        <input type="file" name="image" accept="image/*" required />
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label>Confidence</label>
+          <input type="number" name="confidence" min="0" max="1" step="0.01" value="{{ conf or 0.5 }}" />
+        </div>
+        <div class="field">
+          <label>NMS</label>
+          <input type="number" name="nms" min="0" max="1" step="0.01" value="{{ nms or 0.4 }}" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn primary">Detect</button>
+        <button type="reset" class="btn">Reset</button>
+      </div>
+    </form>
+
+    <div class="grid">
+      {% if uploaded_image %}
+      <div class="card">
+        <h3>Uploaded</h3>
+        <img src="{{ uploaded_image }}" alt="Uploaded image" />
+      </div>
+      {% endif %}
+
+      {% if result_image %}
+      <div class="card">
+        <h3>Detections</h3>
+        <img src="{{ result_image }}" alt="Result image with detections" />
+        {% if classes and confidences %}
+        <div class="list">
+          <h4>Detected objects</h4>
+          <ul>
+            {% for i in range(classes|length) %}
+            <li>{{ classes[i] }} — {{ '%.2f' % confidences[i] }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+      <!-- Speech button and audio player -->
+<button id="speak-btn" style="margin-top:1em;">🔊 Speak Detected Objects</button>
+<audio id="speech-audio" controls style="display:none;"></audio>
+<script>
+document.getElementById('speak-btn').onclick = function() {
+  // Get detected classes from the list
+  const classes = Array.from(document.querySelectorAll('.list ul li')).map(li => li.textContent.split('—')[0].trim());
+  if (!classes.length) return;
+  const formData = new FormData();
+  classes.forEach(c => formData.append('classes[]', c));
+  fetch('/speak', { method: 'POST', body: formData })
+    .then(r => r.blob())
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const audio = document.getElementById('speech-audio');
+      audio.src = url;
+      audio.style.display = 'block';
+      audio.play();
+    });
+};
+</script>
+    </div>
+
+    <div class="card">
+      <h3>Webcam capture</h3>
+      <p class="subtitle">Start your camera, capture a frame, and run detection.</p>
+      <div class="row">
+        <button id="btnStart" class="btn">Start Camera</button>
+        <button id="btnCapture" class="btn primary">Capture</button>
+        <button id="btnStop" class="btn">Stop</button>
+      </div>
+      <div class="row" style="margin-top:12px; align-items: flex-start;">
+        <video id="video" autoplay playsinline style="max-width:48%; border:1px solid #27324a; border-radius:8px;"></video>
+        <canvas id="canvas" style="display:none;"></canvas>
+        {% if result_image %}
+        <img src="{{ result_image }}" alt="Result image" style="max-width:48%;" />
+        {% endif %}
+      </div>
+    </div>
+
+    <script>
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('canvas');
+      const btnStart = document.getElementById('btnStart');
+      const btnCapture = document.getElementById('btnCapture');
+      const btnStop = document.getElementById('btnStop');
+
+      // Cross-browser getUserMedia fallback and helpful error for insecure origins
+      function ensureGetUserMedia() {
+        if (!navigator.mediaDevices) {
+          navigator.mediaDevices = {};
+        }
+        if (!navigator.mediaDevices.getUserMedia) {
+          const getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+          if (getUserMedia) {
+            navigator.mediaDevices.getUserMedia = function(constraints) {
+              return new Promise((resolve, reject) => getUserMedia.call(navigator, constraints, resolve, reject));
+            };
+          }
+        }
+        return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+      }
+
+      function isLocalhostOrSecure() {
+        const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+        return isLocalhost || location.protocol === 'https:';
+      }
+
+      let stream;
+      btnStart?.addEventListener('click', async () => {
+        try {
+          if (!isLocalhostOrSecure()) {
+            const port = location.port || '5000';
+            const target = `http://127.0.0.1:${port}`;
+            window.location.href = target;
+            return;
+          }
+          if (!ensureGetUserMedia()) {
+            throw new Error('MediaDevices.getUserMedia is not available.');
+          }
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          video.srcObject = stream;
+        } catch (e) {
+          alert('Could not access camera: ' + e);
+        }
+      });
+
+      btnStop?.addEventListener('click', () => {
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+          video.srcObject = null;
+        }
+      });
+
+      btnCapture?.addEventListener('click', async () => {
+        if (!video.videoWidth) { alert('Camera not started'); return; }
+        btnCapture.disabled = true;
+        btnCapture.textContent = 'Capturing...';
+        try {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0);
+          await new Promise((resolve, reject) => {
+            canvas.toBlob(async (blob) => {
+              try {
+                if (!blob) { throw new Error('Failed to capture frame'); }
+                const form = new FormData();
+                form.append('image', blob, 'webcam.jpg');
+                form.append('confidence', document.querySelector('input[name="confidence"]').value || '0.5');
+                form.append('nms', document.querySelector('input[name="nms"]').value || '0.4');
+                const res = await fetch('{{ url_for('detect') }}', { method: 'POST', body: form });
+                if (res.ok) {
+                  const html = await res.text();
+                  document.open();
+                  document.write(html);
+                  document.close();
+                  resolve();
+                } else if (res.redirected) {
+                  window.location.href = res.url;
+                  resolve();
+                } else {
+                  window.location.reload();
+                  resolve();
+                }
+              } catch (err) {
+                reject(err);
+              }
+            }, 'image/jpeg', 0.95);
+          });
+        } catch (e) {
+          alert('Capture failed: ' + e);
+        } finally {
+          btnCapture.disabled = false;
+          btnCapture.textContent = 'Capture';
+        }
+      });
+    </script>
+    </div>
+  </div>
+</body>
+</html>
+
+
